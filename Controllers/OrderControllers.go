@@ -15,7 +15,7 @@ func PlaceOrder(c *gin.Context) {
 	if er := Product.GetProductById(strconv.Itoa(int(order.ProductID)), &product); er != nil {
 		c.AbortWithStatus(http.StatusNotFound)
 	}
-	order.TotalPrice = order.Quantity*product.Price
+	order.TotalPrice = order.Quantity * product.Price
 	order.Status = "order placed"
 	if err := Order.PlaceOrder(&order); err != nil {
 		c.AbortWithStatus(http.StatusNotFound)

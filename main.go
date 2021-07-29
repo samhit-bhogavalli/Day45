@@ -22,7 +22,8 @@ func main() {
 	r := Routes.SetRouter()
 	go Order.SelectOrder()
 	//running
-	//TODO concurrency handling with mutex
+	//TODO: change error statuses
+	//TODO: CRUD customer
 	r.Run("localhost:8080")
 
 }

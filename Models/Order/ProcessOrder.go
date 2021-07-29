@@ -3,7 +3,9 @@ package Order
 import (
 	"container/list"
 	"fmt"
+	"github.com/samhit-bhogavalli/Day45/Config"
 	"github.com/samhit-bhogavalli/Day45/Models/Product"
+	"gorm.io/gorm"
 	"strconv"
 	"sync"
 	"time"
@@ -16,65 +18,55 @@ type Queue struct {
 
 type CustomerMap struct {
 	Cmap  map[int]time.Time
+	ACmap map[int]int
 	Mutex sync.Mutex
 }
 
 var WaitQueue Queue
 var CustMap CustomerMap
 
-var ProductMap sync.Map
-
-//implement atomicity
-func ProcessOrder(channel chan Order, waitGroup *sync.WaitGroup) {
+func ProcessOrder(activeOrders chan Order, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
-	for order := range channel {
+	for order := range activeOrders {
+		//time for processing order
 		time.Sleep(time.Second * 15)
 		var product Product.Product
-		flag := false
-		err := Product.GetProductById(strconv.Itoa(int(order.ProductID)), &product)
-		mutex , ok := ProductMap.Load(int(order.ProductID))
-		if !ok {
-			ProductMap.Store(int(order.ProductID), &sync.Mutex{})
-		}
-		mutex , _ =  ProductMap.Load(int(order.ProductID))
-		mutex.(*sync.Mutex).Lock()
-		if err != nil {
-			order.Status = "failed"
-		} else {
+		err := Config.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("id = ?", strconv.Itoa(int(order.ProductID))).First(&product).Error; err != nil {
+				return err
+			}
 			if product.Quantity < order.Quantity {
 				order.Status = "failed"
 			} else {
-				flag = true
-				//Product.GetProductById(strconv.Itoa(int(product.ID)),&product)
-				product.Quantity = product.Quantity - order.Quantity
 				order.Status = "success"
-				if err = Product.UpdateProduct(strconv.Itoa(int(order.ProductID)), &product); err != nil {
-					flag = false
-					order.Status = "failed"
-				}
+				product.Quantity -= order.Quantity
 			}
-		}
-		if err := UpdateOrder(&order); err != nil {
-			if flag {
-				Product.GetProductById(strconv.Itoa(int(product.ID)),&product)
-				product.Quantity += order.Quantity
+
+			if err := tx.Save(&product).Error; err != nil {
+				return err
 			}
-			Product.UpdateProduct(strconv.Itoa(int(order.ProductID)), &product)
+			if err := tx.Save(&order).Error; err != nil {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			order.Status = "failed"
+			UpdateOrder(&order)
 		}
-		mutex.(*sync.Mutex).Unlock()
-		ProductMap.Delete(int(order.ProductID))
 		fmt.Printf("order with id %d is executed\n",order.ID)
 		CustMap.Mutex.Lock()
 		CustMap.Cmap[int(order.CustomerID)] = time.Now()
+		CustMap.ACmap[int(order.CustomerID)] = 0
 		CustMap.Mutex.Unlock()
 	}
 }
 
 func SelectOrder() {
 	activeOrders := make(chan Order, 10)
-	//time.Sleep(time.Minute * 5)
 	fmt.Println("Order Processing Started")
 	CustMap.Cmap = make(map[int]time.Time)
+	CustMap.ACmap = make(map[int]int)
 	var waitGroup sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		waitGroup.Add(1)
@@ -82,22 +74,19 @@ func SelectOrder() {
 	}
 	go func() {
 		for {
-			WaitQueue.Mutex.Lock()
 			for node := WaitQueue.waitArr.Front(); node != nil; node = node.Next() {
-				//fmt.Println(int(node.Value.(*Order).ID))
-				placed := time.Now()
+				current := time.Now()
 				CustMap.Mutex.Lock()
 				prevTime := CustMap.Cmap[int(node.Value.(*Order).CustomerID)]
 				CustMap.Mutex.Unlock()
-				//fmt.Println(placed.Sub(prevTime))
-				if placed.Sub(prevTime) >= time.Duration(time.Minute*2) {
+				if current.Sub(prevTime) >= time.Duration(time.Minute*2) && CustMap.ACmap[int(node.Value.(*Order).CustomerID)] == 0 {
+					CustMap.ACmap[int(node.Value.(*Order).CustomerID)] = 1
 					fmt.Printf("order with id %d is inserted in activeOrders\n",int(node.Value.(*Order).ID))
 					activeOrders <- *node.Value.(*Order)
 					WaitQueue.waitArr.Remove(node)
 				}
 			}
-			WaitQueue.Mutex.Unlock()
-			//time.Sleep(time.Second * 10)
+			time.Sleep(time.Second * 10)
 		}
 	}()
 	waitGroup.Wait()
